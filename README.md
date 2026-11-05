@@ -24,4 +24,10 @@ Sudoku-App für den Browser. Sie lässt sich als App installieren und funktionie
 | `sw.js` | Service Worker für den Offline-Betrieb |
 | `icon*.png`, `icon.svg`, `apple-touch-icon.png` | App-Icons |
 
-Nach Änderungen an den Dateien in `sw.js` die Cache-Version (`sudoku-v1`) erhöhen, damit installierte Apps die neue Version laden.
+## Updates & Cache
+- Die Seite wird immer zuerst frisch vom Server geladen. Der Cache wird nur offline verwendet.
+- Die App sucht bei jedem Öffnen nach einer neuen Version. Gibt es eine, erscheint „Neue Version verfügbar – Neu laden“.
+- Unten in der App gibt es „App aktualisieren“: Das leert den Cache und lädt alles neu.
+- **Bei jeder Änderung** die Versionsnummer an zwei Stellen erhöhen: `VERSION` in `sw.js` und `APP_VERSION` in `index.html`.
+
+Die App-ID im Manifest (`/Sudoku-/?app=sudoku`) bleibt immer gleich, damit Updates in der installierten App ankommen.

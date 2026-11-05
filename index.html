@@ -104,6 +104,21 @@
   }
   .head-btns { display: flex; gap: 8px; }
   #btnInstall[hidden] { display: none; }
+  .version { margin-top: 10px; font-size: .75rem; color: var(--muted); text-align: center; }
+  .linkish {
+    border: 0; background: none; padding: 0; color: var(--accent); font-size: inherit;
+    text-decoration: underline; text-underline-offset: 2px;
+  }
+  .toast {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: max(16px, env(safe-area-inset-bottom)); z-index: 10;
+    display: flex; align-items: center; gap: 12px; width: max-content; max-width: calc(100vw - 32px);
+    padding: 10px 10px 10px 16px; border-radius: 12px; font-weight: 600; font-size: .92rem;
+    background: var(--text); color: var(--bg); box-shadow: var(--shadow);
+  }
+  .toast[hidden] { display: none; }
+  .steps { margin: 0 0 12px; padding-left: 1.3em; line-height: 1.6; }
+  .steps li { margin-bottom: 4px; }
 
   /* Kopfzeile */
   header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
@@ -295,7 +310,7 @@
   <header>
     <h1>Su<span>do</span>ku</h1>
     <div class="head-btns">
-    <button class="btn" id="btnInstall" type="button" hidden aria-label="Als App installieren">
+    <button class="btn" id="btnInstall" type="button" aria-label="Als App installieren">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
       <span class="hide-sm">Installieren</span>
     </button>
@@ -363,7 +378,29 @@
     Tastatur: <kbd>1</kbd>–<kbd>9</kbd> eintragen · <kbd>⇧</kbd>+Ziffer Notiz · Pfeiltasten bewegen ·
     <kbd>Entf</kbd> löschen · <kbd>N</kbd> Notizen · <kbd>H</kbd> Tipp · <kbd>Strg</kbd>+<kbd>Z</kbd> rückgängig · <kbd>P</kbd> Pause
   </p>
+  <p class="version">
+    Version <span id="appVersion"></span> ·
+    <button type="button" class="linkish" id="btnRefresh">App aktualisieren</button>
+  </p>
 </div>
+
+<!-- Update-Hinweis -->
+<div class="toast" id="toast" role="status" hidden>
+  <span>Neue Version verfügbar.</span>
+  <button class="btn primary" type="button" id="toastReload">Neu laden</button>
+</div>
+
+<!-- Installationshilfe -->
+<dialog id="dlgInstall">
+  <div class="dlg">
+    <h2>Als App installieren</h2>
+    <div id="installSteps"></div>
+    <p class="note-small">Klappt es nicht? Öffne die Seite direkt in Chrome (Android/PC), Edge (PC) oder Safari (iPhone/iPad). In der Vorschau anderer Apps (z.&nbsp;B. GitHub, Claude, WhatsApp) kann man nicht installieren. Firefox am PC unterstützt keine Installation.</p>
+    <div class="row">
+      <button class="btn primary" type="button" id="installClose">Verstanden</button>
+    </div>
+  </div>
+</dialog>
 
 <!-- Gewonnen -->
 <dialog id="dlgWin">
@@ -1087,27 +1124,101 @@
     if (isRunning() && Math.floor(elapsedMs() / 1000) % 5 === 0) saveGame();
   }, 500);
 
-  /* ================= App-Installation (PWA) ================= */
-  if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    window.addEventListener('load', () => {
-      navigator.serviceWorker.register('sw.js').catch(() => { /* offline-Modus nicht verfügbar */ });
+  /* ================= App-Installation & Updates (PWA) ================= */
+  // Muss zur Version in sw.js passen. Bei jeder Änderung an der App beide erhöhen.
+  const APP_VERSION = '2';
+  $('appVersion').textContent = APP_VERSION;
+
+  const swSupported = 'serviceWorker' in navigator && location.protocol !== 'file:';
+  if (swSupported) {
+    let hadController = !!navigator.serviceWorker.controller;
+    window.addEventListener('load', async () => {
+      try {
+        // updateViaCache 'none': sw.js wird nie aus dem HTTP-Cache geladen → Updates kommen sofort an.
+        const reg = await navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' });
+        reg.update().catch(() => {});
+        document.addEventListener('visibilitychange', () => {
+          if (!document.hidden) reg.update().catch(() => {});
+        });
+      } catch (e) { /* Offline-Modus nicht verfügbar */ }
+    });
+    // Neuer Service Worker hat übernommen → Hinweis anzeigen (nicht bei der allerersten Installation).
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController) { hadController = true; return; }
+      $('toast').hidden = false;
     });
   }
+  $('toastReload').onclick = () => { saveGame(); location.reload(); };
+
+  // Manuell: alle Caches leeren, Service Worker neu holen, Seite neu laden.
+  $('btnRefresh').onclick = async () => {
+    saveGame();
+    try {
+      if ('caches' in window) {
+        const keys = await caches.keys();
+        await Promise.all(keys.filter(k => k.startsWith('sudoku-')).map(k => caches.delete(k)));
+      }
+      if (swSupported) {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg) await reg.update();
+      }
+    } catch (e) { /* ignorieren */ }
+    location.reload();
+  };
+
+  const isStandalone = () =>
+    window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+  const ua = navigator.userAgent;
+  const isIOS = /iPhone|iPad|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const isAndroid = /Android/.test(ua);
+  const isInApp = /\bwv\b|FBAN|FBAV|Instagram|Line\/|GitHub|; ?Claude/i.test(ua);
+
   let installPrompt = null;
   const btnInstall = $('btnInstall');
+  btnInstall.hidden = isStandalone();
   window.addEventListener('beforeinstallprompt', e => {
     e.preventDefault();
     installPrompt = e;
     btnInstall.hidden = false;
   });
-  btnInstall.onclick = async () => {
-    if (!installPrompt) return;
-    installPrompt.prompt();
-    try { await installPrompt.userChoice; } catch (e) { /* ignorieren */ }
-    installPrompt = null;
-    btnInstall.hidden = true;
-  };
   window.addEventListener('appinstalled', () => { installPrompt = null; btnInstall.hidden = true; });
+
+  btnInstall.onclick = async () => {
+    if (installPrompt) {
+      installPrompt.prompt();
+      try {
+        const choice = await installPrompt.userChoice;
+        if (choice && choice.outcome === 'accepted') btnInstall.hidden = true;
+      } catch (e) { /* ignorieren */ }
+      installPrompt = null; // ein Prompt kann nur einmal benutzt werden
+      return;
+    }
+    showInstallHelp();
+  };
+
+  function showInstallHelp() {
+    let steps;
+    if (isInApp) {
+      steps = ['Du bist in der Vorschau einer anderen App – dort kann man nicht installieren.',
+        'Tippe auf ⋮ bzw. „…“ und wähle „Im Browser öffnen“.',
+        'Dann dort wie unten beschrieben installieren.'];
+    } else if (isIOS) {
+      steps = ['Öffne die Seite in <b>Safari</b>.',
+        'Tippe unten auf das <b>Teilen</b>-Symbol (Quadrat mit Pfeil nach oben).',
+        'Wähle <b>„Zum Home-Bildschirm“</b> und tippe auf <b>Hinzufügen</b>.'];
+    } else if (isAndroid) {
+      steps = ['Öffne die Seite in <b>Chrome</b>.',
+        'Tippe oben rechts auf <b>⋮</b> (drei Punkte).',
+        'Wähle <b>„App installieren“</b> oder <b>„Zum Startbildschirm hinzufügen“</b>.'];
+    } else {
+      steps = ['Öffne die Seite in <b>Chrome</b> oder <b>Edge</b>.',
+        'Klicke rechts in der Adressleiste auf das <b>Installieren</b>-Symbol (Bildschirm mit Pfeil).',
+        'Alternativ im Browser-Menü (⋮ bzw. …) nach <b>„App installieren“</b> bzw. <b>„Seite als App installieren“</b> suchen.'];
+    }
+    $('installSteps').innerHTML = '<ol class="steps">' + steps.map(s => `<li>${s}</li>`).join('') + '</ol>';
+    $('dlgInstall').showModal();
+  }
+  $('installClose').onclick = () => $('dlgInstall').close();
 
   /* ================= Start ================= */
   function isValidSaved(s) {
